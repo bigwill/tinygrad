@@ -30,6 +30,27 @@ from tinygrad.codegen import full_rewrite_to_sink, get_program
 from tinygrad.renderer import ProgramSpec
 
 # ============================================================================
+# Device Detection
+# ============================================================================
+
+def get_available_devices() -> list[str]:
+  """Return list of available devices on this system."""
+  available = ["CPU", "PYTHON"]  # These are always available
+
+  # Try each device
+  test_devices = ["CUDA", "METAL", "AMD", "GPU"]
+  for dev in test_devices:
+    try:
+      _ = Device[dev]
+      available.append(dev)
+    except Exception:
+      pass
+
+  return available
+
+AVAILABLE_DEVICES = get_available_devices()
+
+# ============================================================================
 # IR Tracing (reused from explore_ir.py)
 # ============================================================================
 
@@ -42,8 +63,14 @@ def trace_code(code: str, device: str = "CPU") -> dict:
   result = {
     "stages": [],
     "error": None,
-    "device": device
+    "device": device,
+    "available_devices": AVAILABLE_DEVICES
   }
+
+  # Check if device is available
+  if device not in AVAILABLE_DEVICES:
+    result["error"] = f"Device '{device}' is not available on this system.\nAvailable devices: {', '.join(AVAILABLE_DEVICES)}"
+    return result
 
   # Set device
   old_default = Device.DEFAULT
@@ -406,11 +433,7 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
     <h1><span>tinygrad</span> IR Explorer</h1>
     <div class="controls">
       <select id="device">
-        <option value="CPU">CPU</option>
-        <option value="METAL">Metal</option>
-        <option value="CUDA">CUDA</option>
-        <option value="AMD">AMD</option>
-        <option value="PYTHON">Python</option>
+        <!-- Populated dynamically based on available devices -->
       </select>
       <select id="examples" class="examples">
         <option value="">Load Example...</option>
@@ -534,6 +557,20 @@ result = vec + mat`
       tabs.innerHTML = '';
       content.innerHTML = '';
 
+      // Update device dropdown if we got available_devices
+      if (data.available_devices) {
+        const select = document.getElementById('device');
+        const currentValue = select.value;
+        select.innerHTML = '';
+        data.available_devices.forEach(dev => {
+          const opt = document.createElement('option');
+          opt.value = dev;
+          opt.textContent = dev;
+          if (dev === currentValue) opt.selected = true;
+          select.appendChild(opt);
+        });
+      }
+
       if (data.error && data.stages.length === 0) {
         content.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
         return;
@@ -604,8 +641,32 @@ result = vec + mat`
       return div.innerHTML;
     }
 
-    // Initial compile
-    compile();
+    // Populate devices and do initial compile
+    function init() {
+      // First, get available devices
+      fetch('/devices')
+        .then(r => r.json())
+        .then(data => {
+          const select = document.getElementById('device');
+          select.innerHTML = '';
+          data.devices.forEach(dev => {
+            const opt = document.createElement('option');
+            opt.value = dev;
+            opt.textContent = dev;
+            select.appendChild(opt);
+          });
+          // Now compile with default device
+          compile();
+        })
+        .catch(() => {
+          // Fallback if /devices fails
+          const select = document.getElementById('device');
+          select.innerHTML = '<option value="CPU">CPU</option>';
+          compile();
+        });
+    }
+
+    init();
   </script>
 </body>
 </html>
@@ -623,6 +684,11 @@ class IRExplorerHandler(BaseHTTPRequestHandler):
       self.send_header("Content-Type", "text/html")
       self.end_headers()
       self.wfile.write(HTML_TEMPLATE.encode())
+    elif self.path == "/devices":
+      self.send_response(200)
+      self.send_header("Content-Type", "application/json")
+      self.end_headers()
+      self.wfile.write(json.dumps({"devices": AVAILABLE_DEVICES}).encode())
     else:
       self.send_error(404)
 
