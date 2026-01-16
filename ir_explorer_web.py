@@ -299,10 +299,10 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
     }
     .editor-pane {
       width: 40%;
-      min-width: 300px;
+      min-width: 200px;
+      max-width: 80%;
       display: flex;
       flex-direction: column;
-      border-right: 1px solid #3c3c3c;
     }
     .editor-header {
       background: #2d2d2d;
@@ -324,42 +324,97 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
       resize: none;
       outline: none;
     }
+    /* Resizer handle */
+    .resizer {
+      width: 6px;
+      background: #3c3c3c;
+      cursor: col-resize;
+      flex-shrink: 0;
+      position: relative;
+      transition: background 0.15s;
+    }
+    .resizer:hover, .resizer.dragging {
+      background: #569cd6;
+    }
+    .resizer::after {
+      content: "⋮";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #888;
+      font-size: 14px;
+      pointer-events: none;
+    }
+    .resizer:hover::after, .resizer.dragging::after {
+      color: #fff;
+    }
     .output-pane {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      min-width: 200px;
+    }
+    /* Vertical sidebar for stages */
+    .stage-sidebar {
+      width: 180px;
+      min-width: 140px;
+      background: #252526;
+      border-right: 1px solid #3c3c3c;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .stage-sidebar-header {
+      padding: 10px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      border-bottom: 1px solid #3c3c3c;
+      flex-shrink: 0;
+    }
+    .stage-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .stage-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      border-left: 3px solid transparent;
+      color: #888;
+      border-bottom: 1px solid #2d2d2d;
+    }
+    .stage-item:hover {
+      background: #2d2d2d;
+      color: #d4d4d4;
+    }
+    .stage-item.active {
+      background: #37373d;
+      color: #fff;
+      border-left-color: #569cd6;
+    }
+    .stage-item .stage-type {
+      font-size: 10px;
+      color: #666;
+      margin-top: 2px;
+    }
+    .stage-item.active .stage-type {
+      color: #888;
+    }
+    .stage-content {
       flex: 1;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    .tabs {
-      display: flex;
-      background: #252526;
-      border-bottom: 1px solid #3c3c3c;
-      overflow-x: auto;
-      flex-shrink: 0;
-    }
-    .tab {
-      padding: 10px 20px;
-      cursor: pointer;
-      font-size: 13px;
-      border-bottom: 2px solid transparent;
-      white-space: nowrap;
-      color: #888;
-    }
-    .tab:hover { color: #d4d4d4; }
-    .tab.active {
-      color: #fff;
-      border-bottom-color: #569cd6;
-    }
-    .tab-content {
-      flex: 1;
-      overflow: auto;
-      padding: 0;
-    }
     .stage {
       display: none;
       height: 100%;
+      flex-direction: column;
     }
-    .stage.active { display: flex; flex-direction: column; }
+    .stage.active { display: flex; }
     .stage-header {
       background: #2d2d2d;
       padding: 10px 15px;
@@ -377,9 +432,10 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
     }
     .stage-stats {
       display: flex;
-      gap: 15px;
+      flex-wrap: wrap;
+      gap: 8px;
       margin-top: 8px;
-      font-size: 12px;
+      font-size: 11px;
     }
     .stage-stats span {
       background: #3c3c3c;
@@ -422,9 +478,20 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
     .examples {
       font-size: 13px;
     }
+    /* Prevent text selection while dragging */
+    body.resizing {
+      user-select: none;
+      cursor: col-resize;
+    }
     @media (max-width: 900px) {
       .main { flex-direction: column; }
-      .editor-pane { width: 100%; height: 40%; min-width: auto; border-right: none; border-bottom: 1px solid #3c3c3c; }
+      .editor-pane { width: 100% !important; height: 35%; min-width: auto; max-width: none; }
+      .resizer { display: none; }
+      .output-pane { flex-direction: column; }
+      .stage-sidebar { width: 100%; min-width: auto; height: auto; max-height: 120px; border-right: none; border-bottom: 1px solid #3c3c3c; }
+      .stage-list { display: flex; flex-wrap: wrap; overflow-x: auto; }
+      .stage-item { border-left: none; border-bottom: 2px solid transparent; }
+      .stage-item.active { border-bottom-color: #569cd6; border-left-color: transparent; }
     }
   </style>
 </head>
@@ -450,7 +517,7 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
   </header>
 
   <div class="main">
-    <div class="editor-pane">
+    <div class="editor-pane" id="editorPane">
       <div class="editor-header">Python (tinygrad)</div>
       <textarea id="editor" spellcheck="false"># Simple element-wise addition
 a = Tensor([1, 2, 3, 4])
@@ -458,9 +525,14 @@ b = Tensor([5, 6, 7, 8])
 result = a + b</textarea>
     </div>
 
+    <div class="resizer" id="resizer"></div>
+
     <div class="output-pane">
-      <div class="tabs" id="tabs"></div>
-      <div class="tab-content" id="content"></div>
+      <div class="stage-sidebar">
+        <div class="stage-sidebar-header">Pipeline Stages</div>
+        <div class="stage-list" id="stageList"></div>
+      </div>
+      <div class="stage-content" id="stageContent"></div>
     </div>
   </div>
 
@@ -511,7 +583,7 @@ result = vec + mat`
     };
 
     document.getElementById('editor').addEventListener('keydown', function(e) {
-      if (e.ctrlKey && e.key === 'Enter') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         compile();
       }
@@ -522,6 +594,35 @@ result = vec + mat`
         const end = this.selectionEnd;
         this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
         this.selectionStart = this.selectionEnd = start + 2;
+      }
+    });
+
+    // Resizer logic
+    const resizer = document.getElementById('resizer');
+    const editorPane = document.getElementById('editorPane');
+    let isResizing = false;
+
+    resizer.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      resizer.classList.add('dragging');
+      document.body.classList.add('resizing');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const containerWidth = document.querySelector('.main').offsetWidth;
+      const newWidth = e.clientX;
+      const percent = (newWidth / containerWidth) * 100;
+      if (percent > 15 && percent < 85) {
+        editorPane.style.width = percent + '%';
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        resizer.classList.remove('dragging');
+        document.body.classList.remove('resizing');
       }
     });
 
@@ -551,11 +652,11 @@ result = vec + mat`
     }
 
     function renderStages(data) {
-      const tabs = document.getElementById('tabs');
-      const content = document.getElementById('content');
+      const stageList = document.getElementById('stageList');
+      const stageContent = document.getElementById('stageContent');
 
-      tabs.innerHTML = '';
-      content.innerHTML = '';
+      stageList.innerHTML = '';
+      stageContent.innerHTML = '';
 
       // Update device dropdown if we got available_devices
       if (data.available_devices) {
@@ -572,17 +673,23 @@ result = vec + mat`
       }
 
       if (data.error && data.stages.length === 0) {
-        content.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+        stageContent.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
         return;
       }
 
+      // Clamp currentTab to valid range
+      if (currentTab >= data.stages.length) currentTab = 0;
+
       data.stages.forEach((stage, i) => {
-        // Tab
-        const tab = document.createElement('div');
-        tab.className = 'tab' + (i === currentTab ? ' active' : '');
-        tab.textContent = stage.name;
-        tab.onclick = () => switchTab(i);
-        tabs.appendChild(tab);
+        // Sidebar item
+        const item = document.createElement('div');
+        item.className = 'stage-item' + (i === currentTab ? ' active' : '');
+        item.innerHTML = `
+          <div>${escapeHtml(stage.name)}</div>
+          <div class="stage-type">${escapeHtml(stage.type || 'code')}</div>
+        `;
+        item.onclick = () => switchTab(i);
+        stageList.appendChild(item);
 
         // Content
         const div = document.createElement('div');
@@ -612,7 +719,7 @@ result = vec + mat`
             <pre><code class="language-${stage.type || 'python'}">${escapeHtml(stage.content)}</code></pre>
           </div>
         `;
-        content.appendChild(div);
+        stageContent.appendChild(div);
       });
 
       // Highlight all code blocks
@@ -625,13 +732,13 @@ result = vec + mat`
         const errorDiv = document.createElement('div');
         errorDiv.className = 'error';
         errorDiv.textContent = data.error;
-        content.insertBefore(errorDiv, content.firstChild);
+        stageContent.insertBefore(errorDiv, stageContent.firstChild);
       }
     }
 
     function switchTab(i) {
       currentTab = i;
-      document.querySelectorAll('.tab').forEach((t, j) => t.classList.toggle('active', i === j));
+      document.querySelectorAll('.stage-item').forEach((t, j) => t.classList.toggle('active', i === j));
       document.querySelectorAll('.stage').forEach((s, j) => s.classList.toggle('active', i === j));
     }
 
