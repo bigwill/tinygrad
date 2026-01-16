@@ -4,15 +4,15 @@ overview: Create an educational Python script that traces tensor operations thro
 todos:
   - id: create-explorer
     content: Create explore_ir.py with annotated tensor examples and stage capture
-    status: pending
+    status: completed
   - id: add-examples
     content: "Add progressive examples: elementwise, reduction, matmul, fused ops"
-    status: pending
+    status: completed
     dependencies:
       - create-explorer
   - id: add-report
     content: Add markdown report generation with diffs between stages
-    status: pending
+    status: completed
     dependencies:
       - add-examples
 ---
