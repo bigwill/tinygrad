@@ -51,6 +51,184 @@ def get_available_devices() -> list[str]:
 AVAILABLE_DEVICES = get_available_devices()
 
 # ============================================================================
+# Stage Explanations
+# ============================================================================
+
+STAGE_EXPLANATIONS = {
+  "source": """Your Python code using the tinygrad Tensor API. Operations like +, -, @, .sum() 
+create a lazy computation graph - nothing executes yet.""",
+
+  "lazy": """The lazy UOp (Universal Operation) graph. Each tensor operation becomes a UOp node.
+Key ops: BUFFER (data storage), COPY (device transfer), ADD/MUL/etc (math ops), 
+RESHAPE/EXPAND/PERMUTE (view ops), REDUCE_AXIS (reductions like sum/max).""",
+
+  "schedule": """The scheduler analyzes the lazy graph and decides:
+1. Which operations to FUSE into single kernels (better performance)
+2. Which need separate kernels (e.g., reductions often can't fuse)
+3. The execution ORDER based on data dependencies
+COPY ops move data between devices. SINK ops are compute kernels.""",
+
+  "ast": """The kernel's Abstract Syntax Tree before optimization.
+- DEFINE_GLOBAL: Input/output buffer pointers
+- RANGE: Loop iteration (LOOP=sequential, REDUCE=accumulation)
+- INDEX: Memory addressing (buffer[index])
+- LOAD/STORE: Memory operations (added during optimization)
+- Operations happen inside the loop structure""",
+
+  "optimized": """After optimization passes:
+1. Range simplification - simplify loop bounds
+2. Load collapse - optimize memory access patterns  
+3. Symbolic simplification - constant folding, algebraic simplification
+4. Expander - unroll small loops for performance
+5. Devectorizer - handle SIMD operations
+The graph is now ready for code generation.""",
+
+  "code": """Final generated code for the target device.
+This runs on your CPU/GPU. The compiler will further optimize this."""
+}
+
+def get_stage_explanation(stage_name: str) -> str:
+  """Get a detailed explanation for a pipeline stage."""
+  name_lower = stage_name.lower()
+  if "source" in name_lower:
+    return STAGE_EXPLANATIONS["source"]
+  elif "lazy" in name_lower:
+    return STAGE_EXPLANATIONS["lazy"]
+  elif "schedule" in name_lower:
+    return STAGE_EXPLANATIONS["schedule"]
+  elif "ast" in name_lower:
+    return STAGE_EXPLANATIONS["ast"]
+  elif "optimized" in name_lower or "optim" in name_lower:
+    return STAGE_EXPLANATIONS["optimized"]
+  elif "code" in name_lower:
+    return STAGE_EXPLANATIONS["code"]
+  return ""
+
+
+def compute_diff(before_uop: UOp, after_uop: UOp) -> dict:
+  """Compute detailed diff between two UOp graphs."""
+  before_ops = list(before_uop.toposort())
+  after_ops = list(after_uop.toposort())
+
+  def count_ops(ops):
+    counts = {}
+    for u in ops:
+      counts[u.op.name] = counts.get(u.op.name, 0) + 1
+    return counts
+
+  before_counts = count_ops(before_ops)
+  after_counts = count_ops(after_ops)
+
+  all_ops = set(before_counts.keys()) | set(after_counts.keys())
+
+  added = {op: after_counts[op] for op in all_ops if before_counts.get(op, 0) == 0}
+  removed = {op: before_counts[op] for op in all_ops if after_counts.get(op, 0) == 0}
+  changed = {op: (before_counts.get(op, 0), after_counts.get(op, 0))
+             for op in all_ops
+             if before_counts.get(op, 0) != after_counts.get(op, 0)
+             and op not in added and op not in removed}
+
+  return {
+    "before_total": len(before_ops),
+    "after_total": len(after_ops),
+    "added": added,
+    "removed": removed,
+    "changed": changed
+  }
+
+
+def format_diff_text(diff: dict) -> str:
+  """Format diff as human-readable text with explanations."""
+  lines = []
+  delta = diff['after_total'] - diff['before_total']
+  lines.append(f"UOp count: {diff['before_total']} → {diff['after_total']} ({delta:+d})")
+
+  if diff['added']:
+    lines.append("")
+    lines.append("✚ ADDED:")
+    for op, count in diff['added'].items():
+      explanation = get_op_explanation(op)
+      lines.append(f"  • {op} (×{count}){': ' + explanation if explanation else ''}")
+
+  if diff['removed']:
+    lines.append("")
+    lines.append("✖ REMOVED:")
+    for op, count in diff['removed'].items():
+      explanation = get_op_explanation(op)
+      lines.append(f"  • {op} (×{count}){': ' + explanation if explanation else ''}")
+
+  if diff['changed']:
+    lines.append("")
+    lines.append("△ CHANGED:")
+    for op, (before, after) in diff['changed'].items():
+      lines.append(f"  • {op}: {before} → {after}")
+
+  return "\n".join(lines)
+
+
+def get_op_explanation(op_name: str) -> str:
+  """Get a brief explanation of what a UOp does."""
+  explanations = {
+    "LOAD": "reads from memory",
+    "STORE": "writes to memory",
+    "INDEX": "computes memory address",
+    "RANGE": "loop iteration variable",
+    "END": "marks end of loop scope",
+    "REDUCE": "accumulates values (sum, max, etc.)",
+    "DEFINE_GLOBAL": "declares buffer pointer",
+    "DEFINE_LOCAL": "declares shared memory",
+    "SPECIAL": "GPU thread/block index",
+    "CONST": "constant value",
+    "CAST": "type conversion",
+    "ADD": "addition",
+    "MUL": "multiplication", 
+    "SINK": "root of kernel graph",
+    "BUFFER": "data storage",
+    "COPY": "device-to-device transfer",
+    "RESHAPE": "changes logical shape (no data movement)",
+    "EXPAND": "broadcasts to larger shape",
+    "PERMUTE": "reorders dimensions",
+    "REDUCE_AXIS": "reduction along axis",
+    "CONTIGUOUS": "ensures contiguous memory layout",
+  }
+  return explanations.get(op_name, "")
+
+
+def annotate_uop_code(code: str) -> str:
+  """Add inline comments to pyrender output explaining key patterns."""
+  annotations = [
+    ("UOp.new_buffer", "# Create a new data buffer"),
+    ("copy_to_device", "# Transfer data to compute device"),
+    (".r(Ops.ADD", "# Reduction: sum along axis"),
+    (".r(Ops.MUL", "# Reduction: product along axis"),
+    (".r(Ops.MAX", "# Reduction: max along axis"),
+    ("DEFINE_GLOBAL", "# Buffer pointer parameter"),
+    ("UOp.range(", "# Loop from 0 to N"),
+    (".index(", "# Compute memory address"),
+    (".load()", "# Read from memory"),
+    (".store(", "# Write to memory"),
+    (".end(", "# End of loop scope"),
+    (".sink()", "# Kernel graph root"),
+    ("AxisType.LOOP", "# Sequential loop"),
+    ("AxisType.REDUCE", "# Reduction loop (accumulates)"),
+    ("AxisType.GLOBAL", "# GPU global thread"),
+    ("AxisType.LOCAL", "# GPU local/shared thread"),
+  ]
+
+  lines = code.split('\n')
+  result = []
+  for line in lines:
+    comment = ""
+    for pattern, annotation in annotations:
+      if pattern in line and "#" not in line:
+        comment = "  " + annotation
+        break
+    result.append(line + comment)
+
+  return '\n'.join(result)
+
+
+# ============================================================================
 # IR Tracing (reused from explore_ir.py)
 # ============================================================================
 
@@ -105,16 +283,17 @@ def trace_code(code: str, device: str = "CPU") -> dict:
       "name": "Source Code",
       "type": "python",
       "content": code,
-      "description": "Your tinygrad Python code"
+      "description": get_stage_explanation("source")
     })
 
     # Stage 2: Lazy UOp Graph
     lazy_uop = tensor.uop
+    lazy_code = annotate_uop_code(pyrender(lazy_uop))
     result["stages"].append({
       "name": "Lazy UOp Graph",
       "type": "python",
-      "content": pyrender(lazy_uop),
-      "description": "Lazy computation graph (not yet scheduled)",
+      "content": lazy_code,
+      "description": get_stage_explanation("lazy"),
       "stats": {
         "total_uops": len(list(lazy_uop.toposort())),
         "op_counts": _count_ops(lazy_uop)
@@ -136,7 +315,7 @@ def trace_code(code: str, device: str = "CPU") -> dict:
       "name": "Schedule",
       "type": "text",
       "content": f"Scheduled {len(schedule)} kernel(s):\n\n" + "\n".join(schedule_info),
-      "description": "Kernel execution order with dependencies"
+      "description": get_stage_explanation("schedule")
     })
 
     # For each kernel, show the stages
@@ -149,11 +328,12 @@ def trace_code(code: str, device: str = "CPU") -> dict:
       ast = si.ast
 
       # Kernel AST
+      ast_code = annotate_uop_code(pyrender(ast))
       result["stages"].append({
         "name": f"Kernel {kernel_idx} - AST",
         "type": "python",
-        "content": pyrender(ast),
-        "description": "Kernel abstract syntax tree before optimization",
+        "content": ast_code,
+        "description": get_stage_explanation("ast"),
         "stats": {
           "total_uops": len(list(ast.toposort())),
           "op_counts": _count_ops(ast)
@@ -163,11 +343,18 @@ def trace_code(code: str, device: str = "CPU") -> dict:
       # Optimized
       try:
         optimized = full_rewrite_to_sink(ast, renderer, optimize=True)
+
+        # Compute diff from AST to optimized
+        diff = compute_diff(ast, optimized)
+        diff_text = format_diff_text(diff)
+
+        opt_code = annotate_uop_code(pyrender(optimized))
         result["stages"].append({
           "name": f"Kernel {kernel_idx} - Optimized",
           "type": "python",
-          "content": pyrender(optimized),
-          "description": "After optimization passes (symbolic, range simplification, etc.)",
+          "content": opt_code,
+          "description": get_stage_explanation("optimized"),
+          "diff": diff_text,
           "stats": {
             "total_uops": len(list(optimized.toposort())),
             "op_counts": _count_ops(optimized)
@@ -189,11 +376,11 @@ def trace_code(code: str, device: str = "CPU") -> dict:
           "name": f"Kernel {kernel_idx} - {device} Code",
           "type": _get_lang(device, prg.src),
           "content": prg.src,
-          "description": f"Generated {device} code ready for execution",
+          "description": get_stage_explanation("code"),
           "stats": {
             "lines": len(prg.src.strip().split("\n")),
-            "ops": str(prg.estimates.ops),
-            "memory": str(prg.estimates.mem)
+            "est_ops": str(prg.estimates.ops),
+            "est_mem": f"{prg.estimates.mem} bytes"
           }
         })
       except Exception as e:
@@ -424,11 +611,32 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
     .stage-header h3 {
       font-size: 14px;
       font-weight: 600;
-      margin-bottom: 5px;
+      margin-bottom: 8px;
     }
-    .stage-header p {
+    .stage-desc {
       font-size: 12px;
-      color: #888;
+      color: #aaa;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: #252526;
+      border-radius: 4px;
+      border-left: 3px solid #569cd6;
+    }
+    .stage-diff {
+      font-size: 11px;
+      color: #d4d4d4;
+      margin: 10px 0;
+      padding: 10px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      border: 1px solid #333;
+    }
+    .stage-diff pre {
+      margin: 0;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      white-space: pre-wrap;
     }
     .stage-stats {
       display: flex;
@@ -709,10 +917,16 @@ result = vec + mat`
           statsHtml += '</div>';
         }
 
+        let diffHtml = '';
+        if (stage.diff) {
+          diffHtml = `<div class="stage-diff"><pre>${escapeHtml(stage.diff)}</pre></div>`;
+        }
+
         div.innerHTML = `
           <div class="stage-header">
             <h3>${escapeHtml(stage.name)}</h3>
-            <p>${escapeHtml(stage.description || '')}</p>
+            <p class="stage-desc">${escapeHtml(stage.description || '')}</p>
+            ${diffHtml}
             ${statsHtml}
           </div>
           <div class="stage-code">
